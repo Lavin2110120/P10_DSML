@@ -1,6 +1,21 @@
-# Assistant RAG avec Mistral
+# 🏀 SportSee - Assistant IA d'Analyse de Performance Sportive
 
-Ce projet implémente un assistant virtuel basé sur le modèle Mistral, utilisant la technique de Retrieval-Augmented Generation (RAG) pour fournir des réponses précises et contextuelles à partir d'une base de connaissances personnalisée.
+Système RAG (Retrieval-Augmented Generation) pour aider les coachs à interroger
+les archives textuelles et données de matchs de basketball.
+
+## 🎯 Objectif
+Permettre aux entraîneurs de poser des questions en langage naturel :
+- "Quel joueur a le meilleur % à 3 points sur les 5 derniers matchs ?"
+- "Compare les statistiques de rebonds domicile vs extérieur"
+
+## 🏗️ Architecture
+
+┌─────────────┐     ┌──────────────┐     ┌─────────────┐     ┌──────────┐
+│   Streamlit │────▶│  Retriever   │────▶│  FAISS      │────▶│ Mistral  │
+│   (UI)      │     │  (LangChain) │     │  (Vector DB)│     │  (LLM)   │
+└─────────────┘     └──────────────┘     └─────────────┘     └──────────┘
+        │                                              │
+        └──────────────────────────────────────────────┘
 
 ## Fonctionnalités
 
@@ -8,128 +23,80 @@ Ce projet implémente un assistant virtuel basé sur le modèle Mistral, utilisa
 - 🤖 **Génération de réponses** avec les modèles Mistral (Small ou Large)
 - ⚙️ **Paramètres personnalisables** (modèle, nombre de documents, score minimum)
 
-## Prérequis
+## 📦 Installation
 
-- Python 3.9+ 
-- Clé API Mistral (obtenue sur [console.mistral.ai](https://console.mistral.ai/))
+### Prérequis
+- Python 3.9+
+- Clé API Mistral ([console.mistral.ai](https://console.mistral.ai))
 
-## Installation
-
-1. **Cloner le dépôt**
-
+### Setup
 ```bash
-git clone <url-du-repo>
-cd <nom-du-repo>
-```
+# 1. Cloner
+git clone <url>
+cd P10_DSML
 
-2. **Créer un environnement virtuel**
-
-```bash
-# Création de l'environnement virtuel
+# 2. Environnement
 python -m venv venv
+source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# Activation de l'environnement virtuel
-# Sur Windows
-venv\Scripts\activate
-# Sur macOS/Linux
-source venv/bin/activate
-```
-
-3. **Installer les dépendances**
-
-```bash
+# 3. Dépendances
 pip install -r requirements.txt
-```
 
-4. **Configurer la clé API**
-
-Créez un fichier `.env` à la racine du projet avec le contenu suivant :
-
-```
-MISTRAL_API_KEY=votre_clé_api_mistral
+# 4. Configuration
+cp .env.example .env
+# Éditer .env et ajouter : MISTRAL_API_KEY=votre_clé
 ```
 
 ## Structure du projet
+P10_DSML/
+├── 📁 src/                    # Code source organisé
+│   ├── 📁 ingestion/          # Préparation données
+│   │   ├── indexer.py         
+│   │   └── data_loader.py     
+│   ├── 📁 rag/                # Chaîne RAG
+│   │   ├── vector_store.py    
+│   │   └── retriever.py       # À créer si besoin
+│   ├── 📁 llm/                # Interaction Mistral
+│   │   └── mistral_client.py  # (extrait de MistralChat.py)
+│   └── 📁 evaluation/         # Scripts d'audit
+│       └── evaluate_ragas.py  
+├── 📁 app/                    # Applications
+│   └── MistralChat.py         
+├── 📁 data/
+│   ├── 📁 raw/                # Données brutes (Excel SportSee, PDF commentaires)
+│   └── 📁 processed/          # Données nettoyées
+├── 📁 vector_db/              # Index FAISS 
+├── 📁 database/               # SQLite/PostgreSQL 
+├── 📁 tests/                  # Tests unitaires
+├── 📁 notebooks/              # Analyses exploratoires
+├── .env
+├── .gitignore
+├── README.md                  
+└── requirements.txt
 
-```
-.
-├── MistralChat.py          # Application Streamlit principale
-├── indexer.py              # Script pour indexer les documents
-├── inputs/                 # Dossier pour les documents sources
-├── vector_db/              # Dossier pour l'index FAISS et les chunks
-├── database/               # Base de données SQLite pour les interactions
-└── utils/                  # Modules utilitaires
-    ├── config.py           # Configuration de l'application
-    ├── database.py         # Gestion de la base de données
-    └── vector_store.py     # Gestion de l'index vectoriel
+🚀 Utilisation
+1. Placer les données
 
-```
+    Données Excel (matchs, stats) → data/raw/
+    Commentaires textuels (PDF/TXT) → inputs/
 
-## Utilisation
+2. Indexer les documents
 
-### 1. Ajouter des documents
+python src/ingestion/indexer.py
 
-Placez vos documents dans le dossier `inputs/`. Les formats supportés sont :
-- PDF
-- TXT
-- DOCX
-- CSV
-- JSON
+Génère l'index FAISS dans vector_db/
+3. Lancer l'assistant
 
-Vous pouvez organiser vos documents dans des sous-dossiers pour une meilleure organisation.
+streamlit run app/MistralChat.py
 
-### 2. Indexer les documents
+📊 Évaluation
 
-Exécutez le script d'indexation pour traiter les documents et créer l'index FAISS :
+python src/evaluation/evaluate_ragas.py
 
-```bash
-python indexer.py
-```
+Génère un rapport de métriques RAGAS (fidélité, pertinence).
 
-Ce script va :
-1. Charger les documents depuis le dossier `inputs/`
-2. Découper les documents en chunks
-3. Générer des embeddings avec Mistral
-4. Créer un index FAISS pour la recherche sémantique
-5. Sauvegarder l'index et les chunks dans le dossier `vector_db/`
+👥 Équipe
 
-### 3. Lancer l'application
-
-```bash
-streamlit run MistralChat.py
-```
-
-L'application sera accessible à l'adresse http://localhost:8501 dans votre navigateur.
-
-
-## Modules principaux
-
-### `utils/vector_store.py`
-
-Gère l'index vectoriel FAISS et la recherche sémantique :
-- Chargement et découpage des documents
-- Génération des embeddings avec Mistral
-- Création et interrogation de l'index FAISS
-
-### `utils/query_classifier.py`
-
-Détermine si une requête nécessite une recherche RAG :
-- Analyse des mots-clés
-- Classification avec le modèle Mistral
-- Détection des questions spécifiques vs générales
-
-### `utils/database.py`
-
-Gère la base de données SQLite pour les interactions :
-- Enregistrement des questions et réponses
-- Stockage des feedbacks utilisateurs
-- Récupération des statistiques
-
-## Personnalisation
-
-Vous pouvez personnaliser l'application en modifiant les paramètres dans `utils/config.py` :
-- Modèles Mistral utilisés
-- Taille des chunks et chevauchement
-- Nombre de documents par défaut
-- Nom de la commune ou organisation
+    Data Scientist : Vincent
+    Mentor : Sarah (R&D SportSee)
 
