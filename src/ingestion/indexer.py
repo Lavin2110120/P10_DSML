@@ -3,9 +3,13 @@ import argparse
 import logging
 from typing import Optional
 
-from utils.config import INPUT_DIR # INPUT_DATA_URL (décommentez si besoin)
-from utils.data_loader import download_and_extract_zip, load_and_parse_files
-from utils.vector_store import VectorStoreManager
+import sys
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
+from rag.config import INPUT_DIR # INPUT_DATA_URL (décommentez si besoin)
+from ingestion.data_loader import download_and_extract_zip, load_and_parse_files
+from rag.vector_store import VectorStoreManager
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 

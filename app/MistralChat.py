@@ -1,259 +1,188 @@
-# app/MistralChat.py
-import sys
-from pathlib import Path
-
-# Ajouter le dossier src/ au PYTHONPATH
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_PATH = PROJECT_ROOT / "src"
-if str(SRC_PATH) not in sys.path:
-    sys.path.insert(0, str(SRC_PATH))
-
-import logging
-from typing import Any, Dict, List
-
 import streamlit as st
-import faiss
-import numpy as np
+import os
+import logging
+from src.llm.mistral_client import MistralClient
+from dotenv import load_dotenv
 
-# ============================================================
-# CONFIGURATION DES CHEMINS (adapté à ton arborescence)
-# ============================================================
-SRC_DIR = SRC_PATH
-DATA_RAW_DIR = PROJECT_ROOT / "data" / "raw"
-VECTOR_DB_DIR = PROJECT_ROOT / "vector_db"
-
-# ============================================================
-# IMPORTS DEPUIS src/ (maintenant accessibles)
-# ============================================================
-from llm.mistral_client import MistralClient
-from rag.vector_store import VectorStoreManager
-from rag.config import (
-    MISTRAL_API_KEY,
-    MODEL_NAME,
-    SEARCH_K,
-    APP_TITLE,
-    NAME,
-    EMBEDDING_MODEL,
-    CHUNK_SIZE,
-    CHUNK_OVERLAP
-)
-
-# ============================================================
-# CONFIGURATION LOGGING
-# ============================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s - %(levelname)s - %(module)s - %(message)s",
-)
-logger = logging.getLogger(__name__)
-
-# ============================================================
-# CONFIGURATION STREAMLIT
-# ============================================================
-st.set_page_config(
-    page_title=APP_TITLE,
-    page_icon="🏀",
-    layout="wide"
-)
-
-st.title(f"🏀 {APP_TITLE}")
-st.markdown(f"Assistant IA pour l'analyse des matchs NBA - {NAME}")
-
-# ============================================================
-# INITIALISATION DES COMPOSANTS
-# ============================================================
-
-def load_vector_store():
-    """Charge l'index FAISS une seule fois dans l'état de session."""
-    if "vector_store" not in st.session_state:
-        try:
-            vector_manager = VectorStoreManager()
-            # Le constructeur charge déjà l'index FAISS et les chunks.
-            logger.info(f"Index FAISS chargé depuis {VECTOR_DB_DIR}")
-            st.session_state.vector_store = vector_manager
-        except FileNotFoundError:
-            st.error(f"❌ Fichiers d'index non trouvés dans {VECTOR_DB_DIR}")
-            st.info("💡 Veuillez d'abord lancer l'indexation (étape 1) pour créer les fichiers dans vector_db/")
-            logger.exception("FileNotFoundError lors du chargement du VectorStoreManager")
-            st.session_state.vector_store = None
-        except Exception as e:
-            st.error(f"❌ Erreur lors du chargement de l'index: {e}")
-            logger.exception("Erreur lors du chargement de l'index")
-            st.session_state.vector_store = None
-    return st.session_state.vector_store
+# --- Importations depuis vos modules ---
+try:
+    from src.rag.config import (
+        MISTRAL_API_KEY, MODEL_NAME, SEARCH_K,
+        APP_TITLE, NAME
+    )
+    from src.rag.vector_store import VectorStoreManager
+except ImportError as e:
+    st.error(f"Erreur d'importation: {e}. Vérifiez la structure de vos dossiers et les fichiers dans 'utils'.")
+    st.stop()
 
 
-def load_mistral_client():
-    """Initialise le client Mistral une seule fois dans l'état de session."""
-    if "mistral_client" not in st.session_state:
-        if not MISTRAL_API_KEY:
-            st.error("❌ Clé API Mistral non trouvée dans .env (MISTRAL_API_KEY)")
-            st.session_state.mistral_client = None
-        else:
-            try:
-                st.session_state.mistral_client = MistralClient(
-                    api_key=MISTRAL_API_KEY,
-                    model=MODEL_NAME
-                )
-                logger.info("Client Mistral initialisé")
-            except Exception as e:
-                st.error(f"❌ Erreur lors de l'initialisation du client Mistral: {e}")
-                logger.exception("Erreur initialisation client Mistral")
-                st.session_state.mistral_client = None
-    return st.session_state.mistral_client
+# --- Configuration du Logging ---
+# Note: Streamlit peut avoir sa propre gestion de logs. Configurer ici est une bonne pratique.
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(module)s - %(message)s')
 
+# --- Configuration de l'API Mistral ---
+api_key = MISTRAL_API_KEY
+model = MODEL_NAME
 
-# Le bouton est traité avant le chargement : il permet de recréer les deux
-# composants sans toucher à l'historique de conversation.
-with st.sidebar:
-    if st.button("🔄 Réinitialiser"):
-        st.session_state.pop("vector_store", None)
-        st.session_state.pop("mistral_client", None)
-        st.rerun()
+if not api_key:
+    st.error("Erreur : Clé API Mistral non trouvée (MISTRAL_API_KEY). Veuillez la définir dans le fichier .env.")
+    st.stop()
 
 try:
-    load_vector_store()
-    load_mistral_client()
+    client = MistralClient(api_key=api_key)
+    logging.info("Client Mistral initialisé avec la configuration SSL MISTRAL_VERIFY_SSL.")
 except Exception as e:
-    st.error(f"Erreur d'initialisation: {e}")
+    st.error(f"Erreur lors de l'initialisation du client Mistral : {e}")
+    logging.exception("Erreur initialisation client Mistral")
     st.stop()
 
-if st.session_state.vector_store is None or st.session_state.mistral_client is None:
-    st.stop()
-
-# ============================================================
-# FONCTIONS UTILITAIRES
-# ============================================================
-
-def retrieve_context(query: str, k: int = SEARCH_K) -> List[Dict[str, Any]]:
-    """
-    Récupère les chunks pertinents depuis l'index FAISS.
-    """
+# --- Chargement du Vector Store (mis en cache) ---
+@st.cache_resource # Garde le manager chargé en mémoire pour la session
+def get_vector_store_manager():
+    logging.info("Tentative de chargement du VectorStoreManager...")
     try:
-        results = st.session_state.vector_store.search(query, k=k)
-        return results
+        manager = VectorStoreManager()
+        # Vérifie si l'index a bien été chargé par le constructeur
+        if manager.index is None or not manager.document_chunks:
+            st.error("L'index vectoriel ou les chunks n'ont pas pu être chargés.")
+            st.warning("Assurez-vous d'avoir exécuté 'python indexer.py' après avoir placé vos fichiers dans le dossier 'inputs'.")
+            logging.error("Index Faiss ou chunks non trouvés/chargés par VectorStoreManager.")
+            return None # Retourne None si échec
+        logging.info(f"VectorStoreManager chargé avec succès ({manager.index.ntotal} vecteurs).")
+        return manager
+    except FileNotFoundError:
+         st.error("Fichiers d'index ou de chunks non trouvés.")
+         st.warning("Veuillez exécuter 'python indexer.py' pour créer la base de connaissances.")
+         logging.error("FileNotFoundError lors de l'init de VectorStoreManager.")
+         return None
     except Exception as e:
-        logger.error(f"Erreur recherche: {e}")
-        return []
+        st.error(f"Erreur inattendue lors du chargement du VectorStoreManager: {e}")
+        logging.exception("Erreur chargement VectorStoreManager")
+        return None
+
+vector_store_manager = get_vector_store_manager()
+
+# --- Prompt Système pour RAG ---
+# Adaptez ce prompt selon vos besoins
+SYSTEM_PROMPT = f"""Tu es 'NBA Analyst AI', un assistant expert sur la ligue de basketball NBA.
+Ta mission est de répondre aux questions des fans en animant le débat.
+
+---
+{{context_str}}
+---
+
+QUESTION DU FAN:
+{{question}}
+
+RÉPONSE DE L'ANALYSTE NBA:"""
 
 
-def format_context(chunks: List[Dict[str, Any]]) -> str:
-    """
-    Formate les chunks récupérés pour le prompt.
-    """
-    if not chunks:
-        return "Aucun contexte pertinent trouvé."
-
-    context_parts = []
-    for i, chunk in enumerate(chunks, 1):
-        source = chunk.get('metadata', {}).get('source', 'Inconnu')
-        content = chunk.get('content', chunk.get('text', ''))
-        score = chunk.get('score', 0)
-
-        context_parts.append(
-            f"[Document {i} - Source: {source} - Score: {score:.3f}]\n{content}\n"
-        )
-
-    return "\n---\n".join(context_parts)
-
-
-def generate_response(query: str, context: str) -> str:
-    """
-    Génère une réponse avec Mistral en utilisant le contexte RAG.
-    """
-    system_prompt = """Tu es un assistant expert en analyse de matchs NBA.
-Tu réponds aux questions en te basant UNIQUEMENT sur le contexte fourni.
-Si l'information n'est pas dans le contexte, dis-le clairement.
-Sois précis, factuel et cite tes sources quand c'est pertinent."""
-
-    user_prompt = f"""Contexte disponible:
-{context}
-
-Question: {query}
-
-Réponse détaillée basée sur le contexte ci-dessus:"""
-
-    try:
-        response = st.session_state.mistral_client.generate(
-            prompt=user_prompt,
-            system_prompt=system_prompt,
-            temperature=0.3,
-            max_tokens=1000
-        )
-        return response
-    except Exception as e:
-        logger.error(f"Erreur génération Mistral: {e}")
-        return f"❌ Erreur lors de la génération de la réponse: {str(e)}"
-
-# ============================================================
-# INTERFACE STREAMLIT
-# ============================================================
-
-# Sidebar avec infos et statistiques
-with st.sidebar:
-    st.header("ℹ️ Informations")
-    st.markdown(f"""
-    **Modèle:** {MODEL_NAME}
-
-    **Base vectorielle:** {VECTOR_DB_DIR.name}/
-
-    **Documents indexés:** {len(st.session_state.vector_store.document_chunks) if hasattr(st.session_state.vector_store, 'document_chunks') else 'N/A'}
-
-    **Données sources:** {DATA_RAW_DIR.name}/
-    """)
-
-    st.markdown("---")
-    st.header("📊 Statistiques")
-    if 'messages' in st.session_state:
-        st.metric("Messages échangés", len(st.session_state.messages))
-
-    if st.button("🗑️ Effacer l'historique"):
-        st.session_state.messages = []
-        st.rerun()
-
-# Initialisation de l'historique
+# --- Initialisation de l'historique de conversation ---
 if "messages" not in st.session_state:
-    st.session_state.messages = []
-    st.session_state.messages.append({
-        "role": "assistant",
-        "content": f"Bonjour ! Je suis {NAME}, votre assistant d'analyse NBA. Posez-moi vos questions sur les matchs, statistiques ou commentaires des rencontres."
-    })
+    # Message d'accueil initial
+    st.session_state.messages = [{"role": "assistant", "content": f"Bonjour ! Je suis votre analyste IA pour la {NAME}. Posez-moi vos questions sur les équipes, les joueurs ou les statistiques, et je vous répondrai en me basant sur les données les plus récentes."}]
 
-# Affichage de l'historique
+# --- Fonctions ---
+
+def generer_reponse(prompt_messages: list) -> str:
+    """
+    Envoie le prompt (qui inclut maintenant le contexte) à l'API Mistral.
+    """
+    if not prompt_messages:
+         logging.warning("Tentative de génération de réponse avec un prompt vide.")
+         return "Je ne peux pas traiter une demande vide."
+    try:
+        logging.info(f"Appel à l'API Mistral modèle '{model}' avec {len(prompt_messages)} message(s).")
+        # Log le contenu du prompt (peut être long) - commenter si trop verbeux
+        # logging.debug(f"Prompt envoyé à l'API: {prompt_messages}")
+
+        prompt = "\n\n".join(
+            message.content if hasattr(message, "content") else message.get("content", "")
+            for message in prompt_messages
+        )
+        response = client.generate_response(
+            prompt=prompt,
+            temperature=0.1,
+            max_tokens=None,
+        )
+        if response:
+            logging.info("Réponse reçue de l'API Mistral.")
+            return response
+        logging.warning("L'API n'a pas retourné de réponse valide.")
+        return "Désolé, je n'ai pas pu générer de réponse valide pour le moment."
+    except Exception as e:
+        st.error(f"Erreur lors de l'appel à l'API Mistral: {e}")
+        logging.exception("Erreur API Mistral pendant client.chat")
+        return "Je suis désolé, une erreur technique m'empêche de répondre. Veuillez réessayer plus tard."
+
+# --- Interface Utilisateur Streamlit ---
+st.title(APP_TITLE)
+st.caption(f"Assistant virtuel pour {NAME} | Modèle: {model}")
+
+# Affichage des messages de l'historique (pour l'UI)
 for message in st.session_state.messages:
     with st.chat_message(message["role"]):
-        st.markdown(message["content"])
+        st.write(message["content"])
 
-# Input utilisateur
-if prompt := st.chat_input("Posez votre question sur les matchs NBA..."):
+# Zone de saisie utilisateur
+if prompt := st.chat_input(f"Posez votre question sur la {NAME}..."):
+    # 1. Ajouter et afficher le message de l'utilisateur
     st.session_state.messages.append({"role": "user", "content": prompt})
     with st.chat_message("user"):
-        st.markdown(prompt)
+        st.write(prompt)
 
+    # === Début de la logique RAG ===
+
+    # 2. Vérifier si le Vector Store est disponible
+    if vector_store_manager is None:
+        st.error("Le service de recherche de connaissances n'est pas disponible. Impossible de traiter votre demande.")
+        logging.error("VectorStoreManager non disponible pour la recherche.")
+        # On arrête ici car on ne peut pas faire de RAG
+        st.stop()
+
+    # 3. Rechercher le contexte dans le Vector Store
+    try:
+        logging.info(f"Recherche de contexte pour la question: '{prompt}' avec k={SEARCH_K}")
+        search_results = vector_store_manager.search(prompt, k=SEARCH_K)
+        logging.info(f"{len(search_results)} chunks trouvés dans le Vector Store.")
+    except Exception as e:
+        st.error(f"Une erreur est survenue lors de la recherche d'informations pertinentes: {e}")
+        logging.exception(f"Erreur pendant vector_store_manager.search pour la query: {prompt}")
+        search_results = [] # On continue sans contexte si la recherche échoue
+
+    # 4. Formater le contexte pour le prompt LLM
+    context_str = "\n\n---\n\n".join([
+        f"Source: {res['metadata'].get('source', 'Inconnue')} (Score: {res['score']:.1f}%)\nContenu: {res['text']}"
+        for res in search_results
+    ])
+
+    if not search_results:
+        context_str = "Aucune information pertinente trouvée dans la base de connaissances pour cette question."
+        logging.warning(f"Aucun contexte trouvé pour la query: {prompt}")
+
+    # 5. Construire le prompt final pour l'API Mistral en utilisant le System Prompt RAG
+    final_prompt_for_llm = SYSTEM_PROMPT.format(context_str=context_str, question=prompt)
+
+    # Créer la liste de messages pour l'API (juste le prompt système/utilisateur combiné)
+    messages_for_api = [{"role": "user", "content": final_prompt_for_llm}]
+
+    # === Fin de la logique RAG ===
+
+
+    # 6. Afficher indicateur + Générer la réponse de l'assistant via LLM
     with st.chat_message("assistant"):
-        with st.spinner("🔍 Recherche dans les documents..."):
-            chunks = retrieve_context(prompt, k=SEARCH_K)
+        message_placeholder = st.empty()
+        message_placeholder.text("...") # Indicateur simple
 
-            if not chunks:
-                st.warning("⚠️ Aucun document pertinent trouvé pour cette question.")
-                response = "Je n'ai pas trouvé d'information pertinente dans ma base de connaissances pour répondre à cette question."
-            else:
-                with st.expander(f"📚 {len(chunks)} sources trouvées", expanded=False):
-                    for i, chunk in enumerate(chunks, 1):
-                        source = chunk.get('metadata', {}).get('source', 'Inconnu')
-                        score = chunk.get('score', 0)
-                        content_preview = chunk.get('content', chunk.get('text', ''))[:200] + "..."
-                        st.markdown(f"**{i}. {source}** (score: {score:.3f})")
-                        st.caption(content_preview)
+        # Génération de la réponse de l'assistant en utilisant le prompt augmenté
+        response_content = generer_reponse(messages_for_api)
 
-                with st.spinner("🤖 Génération de la réponse avec Mistral..."):
-                    context_text = format_context(chunks)
-                    response = generate_response(prompt, context_text)
+        # Affichage de la réponse complète
+        message_placeholder.write(response_content)
 
-                st.markdown(response)
+    # 7. Ajouter la réponse de l'assistant à l'historique (pour affichage UI)
+    st.session_state.messages.append({"role": "assistant", "content": response_content})
 
-        st.session_state.messages.append({"role": "assistant", "content": response})
-
-# Footer
+# Petit pied de page optionnel
 st.markdown("---")
-st.caption(f"Powered by Mistral AI & FAISS | {APP_TITLE} v1.0")
+st.caption("Powered by Mistral AI & Faiss | Data-driven NBA Insights")

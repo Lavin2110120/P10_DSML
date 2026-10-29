@@ -32,20 +32,20 @@ Permettre aux entraîneurs de poser des questions en langage naturel :
 ### Setup
 ```bash
 # 1. Cloner
-git clone <url>
+git clone "https://github.com/Lavin2110120/P10_DSML"
 cd P10_DSML
 
 # 2. Environnement
 python -m venv venv
-source venv/bin/activate  # Windows: venv\Scripts\activate
+venv\Scripts\activate # Windows
+# Linux: source venv/bin/activate  
+
 
 # 3. Dépendances
 pip install -r requirements.txt
 
 # 4. Configuration
 cp .env.example .env
-# Éditer .env et ajouter : MISTRAL_API_KEY=votre_clé
-```
 
 ## Structure du projet
 P10_DSML/
