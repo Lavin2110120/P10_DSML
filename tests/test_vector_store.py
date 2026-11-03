@@ -7,32 +7,35 @@ from src.rag.vector_store import VectorStoreManager
 
 
 @pytest.mark.unit
-def test_split_documents_to_chunks_preserves_content_and_metadata() -> None:
-    manager = VectorStoreManager.__new__(VectorStoreManager)
+def test_make_chunks_preserves_content_and_metadata() -> None:
+    # _make_chunks est une staticmethod : on peut l'appeler sur la classe
+    # ou sur une instance "vide" créée avec __new__
     documents = [
         {
-            "page_content": "Le contenu du document à découper.",
-            "metadata": {"source": "fixture.txt", "filename": "fixture.txt"},
+            "text": "Le contenu du document à découper.",
+            "source": "fixture.txt",
+            "page": 1,
+            "category": None,
         }
     ]
 
-    chunks = manager._split_documents_to_chunks(documents)
+    chunks = VectorStoreManager._make_chunks(documents)
 
     assert chunks
     assert chunks[0]["id"] == "0_0"
-    assert chunks[0]["text"] == documents[0]["page_content"]
+    assert chunks[0]["text"] == "Le contenu du document à découper."
+    # Selon la structure réelle de _make_chunks :
     assert chunks[0]["metadata"]["source"] == "fixture.txt"
     assert chunks[0]["metadata"]["chunk_id_in_doc"] == 0
     assert "start_index" in chunks[0]["metadata"]
 
 
 @pytest.mark.integration
-def test_splitter_handles_multiple_documents() -> None:
-    manager = VectorStoreManager.__new__(VectorStoreManager)
-    chunks = manager._split_documents_to_chunks(
+def test_make_chunks_handles_multiple_documents() -> None:
+    chunks = VectorStoreManager._make_chunks(
         [
-            {"page_content": "Premier texte.", "metadata": {"source": "a.txt"}},
-            {"page_content": "Second texte.", "metadata": {"source": "b.txt"}},
+            {"text": "Premier texte.", "source": "a.txt", "page": 1},
+            {"text": "Second texte.", "source": "b.txt", "page": 1},
         ]
     )
 

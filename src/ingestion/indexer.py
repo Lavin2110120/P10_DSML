@@ -1,79 +1,63 @@
-# indexer.py
+"""Build the FAISS index from the processed document corpus."""
+from __future__ import annotations
+
 import argparse
 import logging
-from typing import Optional
 
-import sys
-from pathlib import Path
-sys.path.insert(0, str(Path(__file__).parent.parent))
+from rag.ssl_bypass import disable_ssl_verification
+disable_ssl_verification()
 
-from rag.config import INPUT_DIR # INPUT_DATA_URL (décommentez si besoin)
-from ingestion.data_loader import download_and_extract_zip, load_and_parse_files
+from ingestion.data_loader import load_processed_documents
+from llm.mistral_client import MistralClient
+from rag import config
 from rag.vector_store import VectorStoreManager
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
-def run_indexing(input_directory: str, data_url: Optional[str] = None):
-    """Exécute le processus complet d'indexation."""
-    logging.info("--- Démarrage du processus d'indexation ---")
+_PLACEHOLDER_API_KEYS = {
+    "test-key",
+    "changeme",
+    "your_api_key",
+    "your-api-key",
+    "your-mistral-api-key",
+    "replace-me",
+    "replace_me",
+    "none",
+    "null",
+}
 
-    # --- Étape 1: Téléchargement et Extraction (Optionnel) ---
-    if data_url:
-        logging.info(f"Tentative de téléchargement depuis l'URL: {data_url}")
-        success = download_and_extract_zip(data_url, input_directory)
-        if not success:
-            logging.error("Échec du téléchargement ou de l'extraction. Arrêt.")
-            # Décider si on continue avec le contenu local existant ou si on arrête.
-            # Ici, on arrête pour éviter d'indexer des données potentiellement incomplètes/anciennes.
-            return
-    else:
-        logging.info(f"Aucune URL fournie. Utilisation des fichiers locaux dans: {input_directory}")
 
-    # --- Étape 2: Chargement et Parsing des Fichiers ---
-    logging.info(f"Chargement et parsing des fichiers depuis: {input_directory}")
-    documents = load_and_parse_files(input_directory)
+def _configured_api_key() -> str:
+    """Return the configured Mistral key or fail with a useful setup message."""
+    value = getattr(config, "MISTRAL_API_KEY", None)
+    api_key = str(value).strip() if value is not None else ""
+    if not api_key or api_key.lower() in _PLACEHOLDER_API_KEYS:
+        raise RuntimeError(
+            "MISTRAL_API_KEY is missing or still set to a placeholder. "
+            "Set a valid MISTRAL_API_KEY in the environment or .env file."
+        )
+    return api_key
 
-    if not documents:
-        logging.warning("Aucun document n'a été chargé ou parsé. Vérifiez le contenu du dossier d'entrée.")
-        logging.info("--- Processus d'indexation terminé (aucun document traité) ---")
-        return
 
-    # --- Étape 3: Création/Mise à jour de l'index Vectoriel ---
-    logging.info("Initialisation du gestionnaire de Vector Store...")
-    vector_store = VectorStoreManager() # Le constructeur ne fait que charger s'il existe
+def index_documents(input_path: str | None = None) -> VectorStoreManager:
+    """Load processed documents, embed them with Mistral, and build the index."""
+    documents = load_processed_documents(input_path)
+    client = MistralClient(api_key=_configured_api_key())
+    manager = VectorStoreManager(client=client)
+    manager.build_index(documents)
 
-    logging.info("Construction de l'index Faiss (cela peut prendre du temps)...")
-    # Cette méthode va splitter, générer les embeddings, créer l'index et sauvegarder
-    vector_store.build_index(documents)
+    indexed_count = getattr(getattr(manager, "index", None), "ntotal", 0) or 0
+    logger.info("Indexed %s chunks", indexed_count)
+    return manager
 
-    logging.info("--- Processus d'indexation terminé avec succès ---")
-    logging.info(f"Nombre de documents traités: {len(documents)}")
-    if vector_store.index:
-        logging.info(f"Nombre de chunks indexés: {vector_store.index.ntotal}")
-    else:
-        logging.warning("L'index final n'a pas pu être créé ou est vide.")
+
+def main() -> VectorStoreManager:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", default=None, help="Path to processed documents JSON")
+    args = parser.parse_args()
+    return index_documents(args.input)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Script d'indexation pour l'application RAG")
-    parser.add_argument(
-        "--input-dir",
-        type=str,
-        default=INPUT_DIR,
-        help=f"Répertoire contenant les fichiers sources (par défaut: {INPUT_DIR})"
-    )
-    parser.add_argument(
-        "--data-url",
-        type=str,
-        # default=INPUT_DATA_URL, # Décommentez pour utiliser la valeur du .env par défaut
-        default=None,
-        help="URL optionnelle pour télécharger et extraire un fichier inputs.zip"
-    )
-    args = parser.parse_args()
-
-    # Vérifier si l'URL est passée en argument, sinon prendre celle du .env (si définie)
-    # final_data_url = args.data_url if args.data_url is not None else INPUT_DATA_URL
-    # Simplification: on utilise seulement l'argument --data-url pour l'instant
-    final_data_url = args.data_url
-
-    run_indexing(input_directory=args.input_dir, data_url=final_data_url)
+    logging.basicConfig(level=logging.INFO)
+    main()

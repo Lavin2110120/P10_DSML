@@ -24,9 +24,10 @@ class TestDataLoader:
         documents = load_and_parse_files(str(tmp_path))
 
         assert len(documents) == 1
-        assert documents[0]["page_content"] == content
-        assert documents[0]["metadata"]["filename"] == "document.txt"
-        assert documents[0]["metadata"]["source"] == "document.txt"
+        assert documents[0]["text"] == content
+        assert documents[0]["source"] == "document.txt"
+        assert documents[0]["page"] == 1
+        assert documents[0]["category"] is None
 
     def test_unsupported_file_is_ignored(self, tmp_path: Path) -> None:
         (tmp_path / "notes.md").write_text("non pris en charge", encoding="utf-8")
@@ -43,4 +44,5 @@ def test_loader_reads_a_directory_tree(tmp_path: Path) -> None:
     documents = load_and_parse_files(str(tmp_path))
 
     assert len(documents) == 1
-    assert documents[0]["metadata"]["category"] == "categorie"
+    assert documents[0]["text"] == "Texte imbriqué"
+    assert documents[0]["category"] == "categorie"

@@ -36,11 +36,12 @@ pymupdf>=1.22.0
 pillow>=9.0.0
 
 # ============================================
-# Data processing (NumPy 1.x pour compatibilité)
+# Data processing
 # ============================================
 pandas==2.2.3
 openpyxl==3.1.5
-numpy<2.0.0
+numpy>=2.0.0,<2.4.0
+easyocr
 
 # ============================================
 # Utilitaires
@@ -58,10 +59,16 @@ watchdog>=4.0.0
 certifi>=2024.0.0
 
 # ============================================
-# Évaluation RAG (version moderne)
+# Évaluation RAG
+# NOTE : le venv contient probablement ragas>=0.3 (d'où l'ImportError
+# sur 'context_relevancy'). Deux options :
+#   (a) pip install "ragas==0.2.15"  -> downgrade
+#   (b) garder la version récente   -> le evaluate_ragas.py corrigé
+#       résout les métriques dynamiquement (ContextRelevance, etc.)
+#       et fonctionne avec les deux.
 # ============================================
-ragas>=0.2.0,<0.3.0
-datasets
+ragas==0.2.15
+datasets>=2.18.0,<2.21.0
 
 # ============================================
 # Base de données
@@ -96,3 +103,4 @@ pytest-mock>=3.12.0
 ruff>=0.4.0
 black>=24.0.0
 mypy>=1.10.0
+pyarrow>=18.0.0

@@ -30,7 +30,7 @@ if not api_key:
 
 try:
     client = MistralClient(api_key=api_key)
-    logging.info("Client Mistral initialisé avec la configuration SSL MISTRAL_VERIFY_SSL.")
+    logging.info("Client Mistral initialisé.")
 except Exception as e:
     st.error(f"Erreur lors de l'initialisation du client Mistral : {e}")
     logging.exception("Erreur initialisation client Mistral")
@@ -45,14 +45,14 @@ def get_vector_store_manager():
         # Vérifie si l'index a bien été chargé par le constructeur
         if manager.index is None or not manager.document_chunks:
             st.error("L'index vectoriel ou les chunks n'ont pas pu être chargés.")
-            st.warning("Assurez-vous d'avoir exécuté 'python indexer.py' après avoir placé vos fichiers dans le dossier 'inputs'.")
+            st.warning("Assurez-vous d'avoir exécuté 'python -m ingestion.indexer' après avoir placé vos fichiers dans le dossier 'inputs'.")
             logging.error("Index Faiss ou chunks non trouvés/chargés par VectorStoreManager.")
             return None # Retourne None si échec
         logging.info(f"VectorStoreManager chargé avec succès ({manager.index.ntotal} vecteurs).")
         return manager
     except FileNotFoundError:
          st.error("Fichiers d'index ou de chunks non trouvés.")
-         st.warning("Veuillez exécuter 'python indexer.py' pour créer la base de connaissances.")
+         st.warning("Veuillez exécuter 'python -m ingestion.indexer' pour créer la base de connaissances.")
          logging.error("FileNotFoundError lors de l'init de VectorStoreManager.")
          return None
     except Exception as e:
@@ -152,7 +152,9 @@ if prompt := st.chat_input(f"Posez votre question sur la {NAME}..."):
 
     # 4. Formater le contexte pour le prompt LLM
     context_str = "\n\n---\n\n".join([
-        f"Source: {res['metadata'].get('source', 'Inconnue')} (Score: {res['score']:.1f}%)\nContenu: {res['text']}"
+        f"Source: {res.get('metadata', {}).get('source', 'Inconnue')}"
+        f" (page/ligne: {res.get('metadata', {}).get('page', 'n/d')}; distance L2²: {res['score']:.3f}, plus faible = plus proche)\n"
+        f"Contenu: {res['text']}"
         for res in search_results
     ])
 
