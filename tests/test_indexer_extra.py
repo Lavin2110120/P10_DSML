@@ -1,7 +1,7 @@
 from __future__ import annotations
 import pytest
 import rag_test_support  # noqa
-import ingestion.indexer as mod
+import src.ingestion.indexer as mod
 
 @pytest.mark.unit
 def test_api_key_missing_placeholder_and_normalized_value(monkeypatch):

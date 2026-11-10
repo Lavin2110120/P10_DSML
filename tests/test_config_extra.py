@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 import pytest
-import rag.config as config
+import src.config as config
 
 @pytest.mark.unit
 def test_get_logger_reuses_configured_logger_and_handles_file_error(monkeypatch):

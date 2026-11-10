@@ -41,8 +41,8 @@ def test_cli_limit_and_category_variants(ev):
     args = ev._parse_args(["--limit", "3", "--categories", "simple,complexe", "bruitée"])
     assert args.limit == 3
     assert args.categories == ["simple", "complexe", "bruitée"]
-    assert (args.max_workers, args.ragas_timeout, args.ragas_retries) == (2, 180, 10)
-    assert args.sleep == 2.0
+    assert (args.max_workers, args.ragas_timeout, args.ragas_retries) == (1, 300, 10)
+    assert args.sleep == 0.0
     assert (args.top_k, args.max_chunk_chars) == (3, 800)
     custom = ev._parse_args(["--max-workers", "4", "--ragas-timeout", "99", "--ragas-retries", "8", "--sleep", "0.25", "--top-k", "6", "--max-chunk-chars", "1200"])
     assert (custom.max_workers, custom.ragas_timeout, custom.ragas_retries) == (4, 99, 8)
@@ -221,7 +221,7 @@ def test_run_config_passed_and_old_evaluate_supported(ev, monkeypatch, tmp_path)
     def modern(**kwargs): captured.update(kwargs); return Scores()
     monkeypatch.setattr(ev,"evaluate",modern); ev.main([])
     cfg=captured["run_config"]
-    assert (cfg.max_workers,cfg.timeout,cfg.max_retries)==(5,123,9)
+    assert (cfg.max_workers,cfg.timeout,cfg.max_retries)==(1,123,9)
     monkeypatch.setattr(ev,"project_root",tmp_path/"old")
     monkeypatch.setattr(ev,"evaluate",lambda dataset, metrics: Scores())
     ev.main([])

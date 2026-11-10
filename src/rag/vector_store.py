@@ -4,7 +4,7 @@ from pathlib import Path
 import numpy as np
 try: import faiss
 except ImportError: faiss=None
-from src.rag import config
+from src import config
 from src.llm.mistral_client import MistralClient
 
 logger=logging.getLogger(__name__)

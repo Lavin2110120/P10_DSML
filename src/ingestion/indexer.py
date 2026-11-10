@@ -4,13 +4,13 @@ from __future__ import annotations
 import argparse
 import logging
 
-from rag.ssl_bypass import disable_ssl_verification
+from src.ssl_bypass import disable_ssl_verification
 disable_ssl_verification()
 
-from ingestion.data_loader import load_processed_documents
-from llm.mistral_client import MistralClient
-from rag import config
-from rag.vector_store import VectorStoreManager
+from src.ingestion.data_loader import load_processed_documents
+from src.llm.mistral_client import MistralClient
+from src import config
+from src.rag.vector_store import VectorStoreManager
 
 logger = logging.getLogger(__name__)
 

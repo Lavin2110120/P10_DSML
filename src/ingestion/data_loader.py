@@ -1,10 +1,10 @@
 from __future__ import annotations
 import json, zipfile
-from rag.ssl_bypass import disable_ssl_verification
+from src.ssl_bypass import disable_ssl_verification
 disable_ssl_verification()
 from pathlib import Path
 import pandas as pd
-from rag import config
+from src import config
 RAW_DATA_DIR=config.RAW_DATA_DIR
 def extract_text_from_txt(file_path): return Path(file_path).read_text(encoding='utf-8')
 def _ocr_page(page): return ''
@@ -78,3 +78,9 @@ class _LoaderModule(_types.ModuleType):
   if name == "load_and_parse_files" and getattr(value,"__name__",None)=="_legacy_parse": return
   super().__setattr__(name,value)
 _sys.modules[__name__].__class__=_LoaderModule
+
+
+if __name__ == "__main__":
+    documents = load_and_parse_files()
+    output_path = save_processed_documents(documents)
+    print(f"{len(documents)} documents saved to {output_path}")

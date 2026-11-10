@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pandas as pd
 import pytest
 import rag_test_support  # noqa
-import evaluation.evaluate_ragas as ev
+import src.evaluation.evaluate_ragas as ev
 
 @pytest.mark.unit
 def test_query_formats_dict_fallback_and_document_objects(monkeypatch):

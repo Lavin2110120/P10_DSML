@@ -2,10 +2,10 @@ from __future__ import annotations
 from typing import Any
 
 import httpx
-from rag import config
-from rag.ssl_bypass import disable_ssl_verification
+from src import config
+from src.ssl_bypass import disable_ssl_verification
 
-# Apply before creating SDK clients so all downstream httpx users inherit it.
+# Defense in depth if this module is imported independently of config startup.
 _SSL_BYPASS_ENABLED = disable_ssl_verification()
 try:
     from mistralai import Mistral
@@ -26,9 +26,13 @@ class MistralClient:
         if Mistral is None:
             raise RuntimeError("SDK Mistral indisponible")
         client_kwargs = {}
-        if _SSL_BYPASS_ENABLED:
-            client_kwargs.update(client=httpx.Client(verify=False),
-                                 async_client=httpx.AsyncClient(verify=False))
+        if _SSL_BYPASS_ENABLED or getattr(config, "DISABLE_SSL_VERIFY", False):
+            # Supply explicitly unverified clients to the SDK and suppress proxy
+            # discovery in httpx. The global constructors are also patched.
+            client_kwargs.update(
+                client=httpx.Client(verify=False, trust_env=False),
+                async_client=httpx.AsyncClient(verify=False, trust_env=False),
+            )
         self.client = Mistral(api_key=self.api_key, **client_kwargs)
 
     @staticmethod

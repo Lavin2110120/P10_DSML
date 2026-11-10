@@ -9,22 +9,23 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-SCRIPT = Path(__file__).resolve().parents[1] / "evaluate_ragas.py"
+SCRIPT = Path(__file__).resolve().parents[1] / "src" / "evaluation" / "evaluate_ragas.py"
 
 
 def load_module(monkeypatch):
-    rag = types.ModuleType("rag"); rag.__path__ = []
-    ssl = types.ModuleType("rag.ssl_bypass"); ssl.disable_ssl_verification = lambda: None
-    config = types.ModuleType("rag.config"); config.PROJECT_ROOT = SCRIPT.parent
+    src_pkg = types.ModuleType("src"); src_pkg.__path__ = []
+    rag = types.ModuleType("src.rag"); rag.__path__ = []
+    ssl = types.ModuleType("src.ssl_bypass"); ssl.disable_ssl_verification = lambda: None
+    config = types.ModuleType("src.config"); config.PROJECT_ROOT = SCRIPT.parent
     config.MISTRAL_API_KEY = "mock-key"; config.MODEL_NAME = "mistral-small-latest"
     config.EMBEDDING_MODEL = "mistral-embed"; config.SEARCH_K = 5
-    vector = types.ModuleType("rag.vector_store"); vector.VectorStoreManager = lambda **kw: None
-    llm = types.ModuleType("llm"); llm.__path__ = []
-    client = types.ModuleType("llm.mistral_client"); client.MistralClient = lambda **kw: None
+    vector = types.ModuleType("src.rag.vector_store"); vector.VectorStoreManager = lambda **kw: None
+    llm = types.ModuleType("src.llm"); llm.__path__ = []
+    client = types.ModuleType("src.llm.mistral_client"); client.MistralClient = lambda **kw: None
     ragas = types.ModuleType("ragas"); ragas.evaluate = lambda **kw: []
-    for name, module in {"rag": rag, "rag.ssl_bypass": ssl, "rag.config": config,
-                         "rag.vector_store": vector, "llm": llm,
-                         "llm.mistral_client": client, "ragas": ragas}.items():
+    for name, module in {"src": src_pkg, "src.rag": rag, "src.ssl_bypass": ssl, "src.config": config,
+                         "src.rag.vector_store": vector, "src.llm": llm,
+                         "src.llm.mistral_client": client, "ragas": ragas}.items():
         monkeypatch.setitem(sys.modules, name, module)
     spec = importlib.util.spec_from_file_location("evaluate_ragas_resilience_test", SCRIPT)
     module = importlib.util.module_from_spec(spec)

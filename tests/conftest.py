@@ -1,21 +1,12 @@
 from __future__ import annotations
 
-# Bootstrap imports for both tests and project-root packages.
-import sys
-import os
-import importlib
+# Test-only SDK doubles; project imports rely on the editable installation.
 import importlib.util
-import types
-from pathlib import Path
-_TESTS_DIR = Path(__file__).resolve().parent
-_PROJECT_ROOT = _TESTS_DIR.parent
-for _path in (_TESTS_DIR, _PROJECT_ROOT):
-    if str(_path) not in sys.path:
-        sys.path.insert(0, str(_path))
-
+import os
 import pickle
 import sys
 import types
+from pathlib import Path
 import numpy as np
 
 class FakeIndexFlatL2:
@@ -184,30 +175,10 @@ class _FakeMistralClient:
 setattr(mistralai, "Mistral", _FakeMistralClient)
 sys.modules.setdefault("rag_test_support", sys.modules[__name__])
 
-import os
-import sys
-from pathlib import Path
-
 import pytest
 
-# --- Resolution du PYTHONPATH ---------------------------------
+# Fixture paths are relative to the project root; imports come from the editable install.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-SRC_PATH = PROJECT_ROOT / "src"
-
-# La racine permet `from src.xxx import ...`, src/ permet les imports
-# internes non prefixes (`from rag.xxx import ...`, `from llm.xxx import ...`).
-for path in (PROJECT_ROOT, SRC_PATH):
-    path_str = str(path)
-    if path_str not in sys.path:
-        sys.path.insert(0, path_str)
-
-# Expose aussi les deux chemins via PYTHONPATH (processus enfants, Streamlit, etc.)
-pythonpath_entries = os.environ.get("PYTHONPATH", "").split(os.pathsep)
-for path in (SRC_PATH, PROJECT_ROOT):
-    path_str = str(path)
-    if path_str not in pythonpath_entries:
-        pythonpath_entries.insert(0, path_str)
-os.environ["PYTHONPATH"] = os.pathsep.join(e for e in pythonpath_entries if e)
 
 
 # ============================================

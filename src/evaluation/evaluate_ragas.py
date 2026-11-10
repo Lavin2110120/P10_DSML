@@ -21,24 +21,22 @@ from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 
-from rag.ssl_bypass import disable_ssl_verification
+from src.ssl_bypass import disable_ssl_verification
 disable_ssl_verification()
 
 import pandas as pd
 
 try:
     from ragas import evaluate
-except ImportError:  # permet l'import du module sans la dépendance optionnelle
+except ImportError:
     evaluate = None
 
-# Makefile runs this module with PYTHONPATH=src, so use the source-root
-# package names (rag/llm) rather than the repository-root ``src.*`` names.
-from rag import config
-from rag.vector_store import VectorStoreManager
-from llm.mistral_client import MistralClient
+from src import config
+from src.rag.vector_store import VectorStoreManager
+from src.llm.mistral_client import MistralClient
 
 logger = logging.getLogger(__name__)
-project_root = Path(getattr(config, "PROJECT_ROOT", Path(__file__).resolve().parents[2]))
+project_root = config.BASE_DIR  # Alias de compatibilité; les chemins utilisent config.*.
 
 DEFAULT_QUESTIONS = [
     "Quels sont les principaux sujets traités dans les documents ?",
@@ -198,7 +196,7 @@ def _load_questions_df() -> pd.DataFrame:
     global questions_df
     if questions_df is not None:
         return questions_df
-    csv_path = project_root / "data/evaluation/questions_metier.csv"
+    csv_path = config.EVALUATION_DIR / "questions_metier.csv"
     if csv_path.is_file():
         questions_df = pd.read_csv(csv_path)
         if "question" not in questions_df.columns:
@@ -411,7 +409,7 @@ def _parse_args(argv=None):
 
 
 def _cache_path() -> Path:
-    return project_root / "data/evaluation/cache_reponses.json"
+    return config.EVALUATION_DIR / "cache_reponses.json"
 
 
 def _load_response_cache(path: Path) -> dict[str, dict[str, Any]]:
@@ -435,7 +433,7 @@ def _save_response_cache(path: Path, cache: dict[str, dict[str, Any]]) -> None:
 
 
 def _jsonl_cache_path() -> Path:
-    return project_root / "data/evaluation/answers_cache.jsonl"
+    return config.EVALUATION_DIR / "answers_cache.jsonl"
 
 
 def _load_jsonl_response_cache(path: Path) -> dict[str, dict[str, Any]]:
@@ -663,9 +661,9 @@ def main(argv=None):
                         "max_retries": 10, "max_wait": 120})
         scores = evaluate(**eval_kwargs)
 
-    _write_reports(report_rows, scores, project_root / "data/evaluation")
+    _write_reports(report_rows, scores, config.EVALUATION_DIR)
     # Compatibilité avec les consommateurs historiques des rapports sous reports/.
-    reports_dir = project_root / "reports"
+    reports_dir = config.REPORTS_DIR
     reports_dir.mkdir(parents=True, exist_ok=True)
     pd.DataFrame(results).to_csv(reports_dir / "ragas_input.csv", index=False)
     _scores_frame(scores).to_csv(reports_dir / "ragas_scores.csv", index=False)

@@ -4,7 +4,7 @@ import ssl
 import sys
 import types
 import pytest
-import rag.ssl_bypass as module
+import src.ssl_bypass as module
 
 @pytest.fixture(autouse=True)
 def restore_process_state(monkeypatch):

@@ -34,7 +34,7 @@ def _legacy_parse(root=None):
     return output
 _loader.extract_text_from_txt = _legacy_text
 _loader.load_and_parse_files = _legacy_parse
-from src.rag import config
+from src import config
 
 @pytest.mark.unit
 def test_config_paths_defaults_and_logger_are_stable():
