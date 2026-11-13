@@ -1,111 +1,98 @@
-from __future__ import annotations
-import os,pickle,logging
+"""Gestionnaire d'index FAISS adapté aux dimensions des embeddings Gemini (768)."""
+
+import sys
 from pathlib import Path
+sys.path.append(str(Path(__file__).resolve().parent.parent.parent))
+
+from src import ssl_bypass
+from src.config import FAISS_INDEX_FILE, METADATA_FILE, EMBEDDING_DIM
+from src.llm.gemini_client import GeminiClient
+
+import time
+from google.genai import errors
+import faiss
+import json
 import numpy as np
-try: import faiss
-except ImportError: faiss=None
-from src import config
-from src.llm.mistral_client import MistralClient
+from typing import List, Dict, Any
 
-logger=logging.getLogger(__name__)
-
-def _index_class(): return getattr(faiss,'IndexFlatL2',None)
 class VectorStoreManager:
- def __init__(self,client=None):
-  self.index=None; self.document_chunks=[]; self.chunks=self.document_chunks; self.mistral_client=client if client is not None else None
-  self.index_path=Path(config.FAISS_INDEX_FILE); self.chunks_path=Path(config.DOCUMENT_CHUNKS_FILE)
-  if self.index_path.exists() and self.chunks_path.exists(): self.load()
- @staticmethod
- def _make_chunks(documents):
-  if any(not isinstance(doc,dict) for doc in documents): raise TypeError('document must be dict')
-  if not documents: raise ValueError('documents must not be empty')
-  valid=[]
-  for doc in documents:
-   val=doc.get('text',doc.get('page_content',doc.get('content')))
-   if val is not None and not isinstance(val,str): raise TypeError('document text must be str')
-   if val and val.strip(): valid.append(doc)
-  if not valid: return []
-  if config.CHUNK_SIZE<=0 or config.CHUNK_OVERLAP<=0 or config.CHUNK_OVERLAP>=config.CHUNK_SIZE: raise ValueError('Invalid chunk size/overlap')
-  documents=valid
-  out=[]; step=config.CHUNK_SIZE-config.CHUNK_OVERLAP
-  for di,doc in enumerate(documents):
-   if not isinstance(doc,dict): raise TypeError('document must be dict')
-   text=doc.get('text',doc.get('page_content',doc.get('content')))
-   if not isinstance(text,str): raise TypeError('document text must be str')
-   if not text.strip(): continue
-   raw_metadata=doc.get('metadata')
-   metadata=dict(raw_metadata) if isinstance(raw_metadata,dict) else ({'metadata':raw_metadata} if raw_metadata is not None else {})
-   for k,v in doc.items():
-    if k not in ('text','page_content','metadata'): metadata[k]=v
-   pos=0; ci=0
-   while pos<len(text):
-    part=text[pos:pos+config.CHUNK_SIZE]
-    if part.strip():
-     md={**metadata,'chunk_id_in_doc':ci,'start_index':pos}; out.append({'id':f'{di}_{ci}','text':part,'metadata':md})
-    if pos+config.CHUNK_SIZE>=len(text): break
-    pos+=step; ci+=1
-  return out
- _split_documents_to_chunks=_make_chunks
+    def __init__(self):
+        self.client = GeminiClient()
+        self.dimension = EMBEDDING_DIM  # 768
+        self.index = None
+        self.metadata: List[Dict[str, Any]] = []
 
- def _set_chunks(self,chunks): self.document_chunks=chunks; self.chunks=self.document_chunks
+    def create_index_from_documents(self, documents: List[Dict[str, Any]]):
+        """Prend une liste de dicts [{'content': '...', 'metadata': {...}}] et crée l'index."""
+        texts = [
+            doc.get("content") or doc.get("text") or doc.get("page_content") or ""
+            for doc in documents
+        ]
+        print(f"Génération des embeddings pour {len(texts)} segments...")
 
- def _embed(self,texts):
-  if self.mistral_client is None:
-    raise RuntimeError("MistralClient manquant : instancie VectorStoreManager(client=...)")
-  vectors=self.mistral_client.embeddings(texts)
-  if not vectors:return np.empty((0,0),dtype=np.float32)
-  arr=np.asarray(vectors,dtype=np.float32)
-  if arr.ndim!=2 or arr.shape[0]!=len(texts): raise ValueError('Invalid embedding shape')
-  expected=getattr(config,'EMBEDDING_DIM',None)
-  if expected and expected!=1024 and arr.shape[1]!=expected: raise ValueError(f'Dimension inattendue: {arr.shape[1]}')
-  return arr
- 
- def build_index(self,documents):
-  if not documents:
-   self.index=None; self._set_chunks([])
-   for p in (self.index_path,self.chunks_path):
-    try:p.unlink()
-    except FileNotFoundError:pass
-   return
-  chunks=self._make_chunks(documents)
-  if not chunks: self.index=None; self._set_chunks([]); return
-  if config.EMBEDDING_BATCH_SIZE<=0: raise ValueError('EMBEDDING_BATCH_SIZE must be positive')
-  self._set_chunks(chunks); vectors=[]
-  for i in range(0,len(chunks),config.EMBEDDING_BATCH_SIZE): vectors.extend(self._embed([x['text'] for x in chunks[i:i+config.EMBEDDING_BATCH_SIZE]]).tolist())
-  arr=np.asarray(vectors,dtype=np.float32)
-  if arr.shape[0]!=len(chunks): raise ValueError('embedding count mismatch')
-  cls=_index_class()
-  if cls is None: raise RuntimeError('FAISS unavailable')
-  self.index=cls(arr.shape[1]); self.index.add(arr); self.save()
+        batch_size = 20
+        pause_s = 20
+        cache_file = Path(str(FAISS_INDEX_FILE) + ".partial.npy")
 
- def search(self,query,k=5,min_score=None):
-  if not isinstance(query,str) or not query.strip() or k<=0 or (min_score is not None and min_score < 0) or self.index is None or getattr(self.index,'ntotal',0)<=0 or not self.document_chunks:return []
-  if self.mistral_client is None:return []
-  vectors=self._embed([query])
-  if not vectors.size:return []
-  if vectors.shape[1]!=getattr(self.index,'d',vectors.shape[1]): raise ValueError('Dimension mismatch')
-  scores,ids=self.index.search(vectors,min(k,len(self.document_chunks)))
-  out=[]
-  for score,idx in zip(scores[0],ids[0]):
-   if 0<=idx<len(self.document_chunks):
-    value=float(score)
-    if min_score is not None and value<min_score: continue
-    out.append({**self.document_chunks[int(idx)],'score':value})
+        # Reprise : recharge les embeddings déjà calculés
+        all_embeddings: List[List[float]] = []
+        if cache_file.exists():
+            all_embeddings = np.load(cache_file).tolist()
+            print(f"Reprise : {len(all_embeddings)} embeddings déjà calculés.")
 
-  return out
- 
- def save(self):
-  if self.index is None: raise ValueError('Index missing')
-  self.index_path.parent.mkdir(parents=True,exist_ok=True); self.chunks_path.parent.mkdir(parents=True,exist_ok=True)
-  faiss.write_index(self.index,str(self.index_path))
-  with self.chunks_path.open('wb') as f:pickle.dump(self.document_chunks,f)
-  return True
- def load(self):
-  try:
-   index=faiss.read_index(str(self.index_path))
-   with self.chunks_path.open('rb') as f: chunks=pickle.load(f)
-   if not isinstance(chunks,list) or any(not isinstance(c,dict) for c in chunks) or len(chunks)!=index.ntotal: self.index=None; self._set_chunks([]); return False
-   self.index=index; self._set_chunks(chunks); return True
-  except Exception: self.index=None; self._set_chunks([]); return False
- def add_documents(self,documents):
-  old=list(self.document_chunks); self.build_index([*old,*documents]); return self
+        for i in range(len(all_embeddings), len(texts), batch_size):
+            batch = texts[i:i + batch_size]
+            while True:
+                try:
+                    embs = self.client.get_embeddings(batch, task_type="retrieval_document")
+                    break
+                except errors.ClientError as e:
+                    if e.code == 429:
+                        print("Quota atteint, attente de 60 s...")
+                        time.sleep(60)
+                    else:
+                        raise
+            all_embeddings.extend(embs)
+            np.save(cache_file, np.array(all_embeddings, dtype="float32"))
+            print(f"  {len(all_embeddings)}/{len(texts)}")
+            time.sleep(pause_s)
+
+        embs_np = np.array(all_embeddings, dtype="float32")
+        faiss.normalize_L2(embs_np)
+
+        self.index = faiss.IndexFlatIP(self.dimension)
+        self.index.add(embs_np)
+        self.metadata = documents
+
+        self.save()
+        cache_file.unlink(missing_ok=True)
+        print(f"Index créé avec succès ({self.index.ntotal} vecteurs).")
+
+    def save(self):
+        faiss.write_index(self.index, str(FAISS_INDEX_FILE))
+        with open(METADATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.metadata, f, ensure_ascii=False, indent=2)
+
+    def load(self):
+        if not FAISS_INDEX_FILE.exists() or not METADATA_FILE.exists():
+            raise FileNotFoundError("Index ou métadonnées absents. Lancez indexer.py d'abord.")
+        self.index = faiss.read_index(str(FAISS_INDEX_FILE))
+        if self.index.d != self.dimension:
+            raise ValueError(f"Dimension incompatible : {self.index.d} vs {self.dimension}. Réindexez !")
+        with open(METADATA_FILE, "r", encoding="utf-8") as f:
+            self.metadata = json.load(f)
+
+    def search(self, query: str, top_k: int = 3) -> List[Dict[str, Any]]:
+        """Recherche sémantique pour une question donnée."""
+        if self.index is None:
+            self.load()
+        q_emb = self.client.get_embeddings([query], task_type="retrieval_query")[0]
+        q_np = np.array([q_emb], dtype="float32")
+        faiss.normalize_L2(q_np)
+
+        distances, indices = self.index.search(q_np, top_k)
+        results = []
+        for idx in indices[0]:
+            if idx != -1 and idx < len(self.metadata):
+                results.append(self.metadata[idx])
+        return results

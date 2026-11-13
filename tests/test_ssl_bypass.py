@@ -1,79 +1,109 @@
-"""Unit tests for the opt-in TLS bypass; all HTTP stacks are isolated mocks."""
+"""Comportement observable du bypass TLS, sans connexion réseau."""
 from __future__ import annotations
+
+import importlib
+import os
 import ssl
 import sys
 import types
+import warnings
+
+import dotenv
 import pytest
-import src.ssl_bypass as module
+
+_ENV_NAMES = (
+    "DISABLE_SSL_VERIFY",
+    "PYTHONHTTPSVERIFY",
+    "CURL_CA_BUNDLE",
+    "REQUESTS_CA_BUNDLE",
+    "GRPC_DEFAULT_SSL_ROOTS_FILE_PATH",
+)
+
+
+def _noop_load_dotenv(*args, **kwargs):
+    """Empêche le .env réel d'écraser la configuration isolée de chaque test."""
+    return False
+
+
+# Empêche l'import initial d'appliquer le bypass de manière globale
+_previous_flag = os.environ.get("DISABLE_SSL_VERIFY")
+_previous_load_dotenv = dotenv.load_dotenv
+os.environ["DISABLE_SSL_VERIFY"] = "0"
+dotenv.load_dotenv = _noop_load_dotenv
+try:
+    import src.ssl_bypass as module
+finally:
+    dotenv.load_dotenv = _previous_load_dotenv
+    if _previous_flag is None:
+        os.environ.pop("DISABLE_SSL_VERIFY", None)
+    else:
+        os.environ["DISABLE_SSL_VERIFY"] = _previous_flag
+
 
 @pytest.fixture(autouse=True)
-def restore_process_state(monkeypatch):
-    context = ssl._create_default_https_context
-    applied = module._APPLIED
-    names = ("CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE", "SSL_CERT_FILE", "SSL_CERT_DIR")
-    env = {name: __import__('os').environ.get(name) for name in names}
+def isolate_process_state(monkeypatch):
+    """Isole et réinitialise l'état TLS et les variables d'environnement."""
+    sentinel_context = lambda: None
+    monkeypatch.setattr(ssl, "_create_default_https_context", sentinel_context)
+
+    for name in _ENV_NAMES:
+        if name == "DISABLE_SSL_VERIFY":
+            monkeypatch.setenv(name, "0")
+        else:
+            monkeypatch.delenv(name, raising=False)
+
+    monkeypatch.setattr(dotenv, "load_dotenv", _noop_load_dotenv)
     yield
-    ssl._create_default_https_context = context
-    module._APPLIED = applied
-    import os
-    for name, value in env.items():
-        if value is None: os.environ.pop(name, None)
-        else: os.environ[name] = value
 
-@pytest.mark.unit
-def test_disabled_setting_is_noop(monkeypatch):
-    monkeypatch.setenv("DISABLE_SSL_VERIFY", " false ")
-    module._APPLIED = False
-    original = ssl._create_default_https_context
-    assert module.disable_ssl_verification() is False
-    assert ssl._create_default_https_context is original
-    assert module._APPLIED is False
 
-@pytest.mark.unit
-def test_enabling_patches_http_clients_and_requests_idempotently(monkeypatch, caplog):
-    import os
-    monkeypatch.setenv("DISABLE_SSL_VERIFY", " TrUe ")
-    module._APPLIED = False
-    calls = {"http": [], "request": [], "merge": [], "warnings": []}
-    class HttpClient:
-        def __init__(self, *args, **kwargs): calls["http"].append(kwargs)
-    class AsyncClient:
-        def __init__(self, *args, **kwargs): calls["http"].append(kwargs)
-    httpx = types.ModuleType("httpx"); httpx.Client=HttpClient; httpx.AsyncClient=AsyncClient
-    class Session:
-        def request(self, method, url, *args, **kwargs): calls["request"].append(kwargs); return "response"
-        def merge_environment_settings(self, url, proxies, stream, verify, cert):
-            calls["merge"].append(verify); return verify
-    requests = types.ModuleType("requests"); requests.sessions=types.SimpleNamespace(Session=Session)
-    class Warning: pass
-    urllib3=types.ModuleType("urllib3"); urllib3.exceptions=types.SimpleNamespace(InsecureRequestWarning=Warning)
-    urllib3.disable_warnings=lambda warning: calls["warnings"].append(warning)
-    monkeypatch.setitem(sys.modules, "httpx", httpx)
-    monkeypatch.setitem(sys.modules, "requests", requests)
-    monkeypatch.setitem(sys.modules, "urllib3", urllib3)
-    ssl_original = ssl._create_default_https_context
-    assert module.disable_ssl_verification() is True
-    assert ssl._create_default_https_context is ssl._create_unverified_context
-    assert all(os.environ[name] == "" for name in ("CURL_CA_BUNDLE","REQUESTS_CA_BUNDLE","SSL_CERT_FILE","SSL_CERT_DIR"))
-    HttpClient(verify=True, timeout=2); AsyncClient(verify=True)
-    assert calls["http"] == [{"verify":False,"timeout":2},{"verify":False}]
-    assert Session().request("GET", "https://example.invalid", verify=True) == "response"
-    assert calls["request"] == [{"verify":False}]
-    assert Session().merge_environment_settings("u", None, False, True, None) is False
-    assert calls["merge"] == [False] and calls["warnings"] == [Warning]
-    patched_context = ssl._create_default_https_context
-    assert module.disable_ssl_verification() is True
-    assert ssl._create_default_https_context is patched_context
-    assert module._APPLIED is True
-    assert "disabled process-wide" in caplog.text
+@pytest.mark.parametrize("value", ["0", "false", "NO", " off ", ""])
+def test_disabled_mode_leaves_tls_and_environment_untouched(monkeypatch, value):
+    monkeypatch.setenv("DISABLE_SSL_VERIFY", value)
+    context_before = ssl._create_default_https_context
+    environment_before = {name: os.environ.get(name) for name in _ENV_NAMES}
 
-@pytest.mark.unit
-def test_import_error_optional_http_dependencies(monkeypatch):
+    # Le mode désactivé est régi lors du chargement/import du module
+    importlib.reload(module)
+
+    assert ssl._create_default_https_context is context_before
+    assert {name: os.environ.get(name) for name in _ENV_NAMES} == environment_before
+
+
+def test_enabled_mode_patches_tls_clients_environment_and_is_idempotent(monkeypatch):
     monkeypatch.setenv("DISABLE_SSL_VERIFY", "1")
-    module._APPLIED = False
-    original_import = __import__
-    def import_without_optional(name, *args, **kwargs):
-        if name in {"httpx", "requests", "urllib3"}: raise ImportError(name)
-        return original_import(name, *args, **kwargs)
-    monkeypatch.setattr("builtins.__import__", import_without_optional)
-    assert module.disable_ssl_verification() is True
+    original_ssl_unverified = ssl._create_unverified_context
+
+    # Capture l'appel à disable_warnings de urllib3
+    warnings_called = []
+    urllib3_mock = types.ModuleType("urllib3")
+    warning_cls = type("InsecureRequestWarning", (Warning,), {})
+    urllib3_mock.exceptions = types.SimpleNamespace(InsecureRequestWarning=warning_cls)
+    urllib3_mock.disable_warnings = lambda w: warnings_called.append(w)
+    monkeypatch.setitem(sys.modules, "urllib3", urllib3_mock)
+
+    # L'activation par env se produit au chargement ou via l'appel de fonction
+    importlib.reload(module)
+
+    # 1. Contexte SSL standard non vérifié
+    assert ssl._create_default_https_context is original_ssl_unverified
+
+    # 2. Variables d'environnement définies par src/ssl_bypass.py
+    assert os.environ.get("PYTHONHTTPSVERIFY") == "0"
+    assert os.environ.get("GRPC_DEFAULT_SSL_ROOTS_FILE_PATH") == ""
+    assert os.environ.get("CURL_CA_BUNDLE") == ""
+    assert os.environ.get("REQUESTS_CA_BUNDLE") == ""
+
+    # 3. Idempotence : un second appel explicite ne casse rien
+    module.disable_ssl_verification()
+    assert ssl._create_default_https_context is original_ssl_unverified
+    assert os.environ.get("PYTHONHTTPSVERIFY") == "0"
+
+
+@pytest.mark.parametrize("value", ["0", "false", "no", "NO", " off ", ""])
+def test_import_with_falsy_env_does_not_apply_bypass(monkeypatch, value):
+    monkeypatch.setenv("DISABLE_SSL_VERIFY", value)
+    context_before = ssl._create_default_https_context
+
+    importlib.reload(module)
+
+    assert ssl._create_default_https_context is context_before

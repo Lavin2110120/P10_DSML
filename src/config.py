@@ -1,73 +1,57 @@
-from __future__ import annotations
+"""Configuration centralisée pour le pipeline RAG Gemini."""
 
-import logging
 import os
+import sys
 from pathlib import Path
+from dotenv import load_dotenv
 
-try:
-    from dotenv import load_dotenv
-except ImportError:
-    load_dotenv = None
+# Racine du projet : dossier parent de src/
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-# This module lives in <project>/src/config.py. Resolve .env from the project,
-# not from the process working directory (python -m may be launched elsewhere).
-PROJECT_ROOT = Path(__file__).resolve().parents[1]
-_ENV_FILE = PROJECT_ROOT / ".env"
-if load_dotenv is not None and _ENV_FILE.is_file():
-    load_dotenv(dotenv_path=_ENV_FILE, override=False)
+# Chargement du .env à la racine
+ENV_PATH = PROJECT_ROOT / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
-# Apply the process-wide patch before importing SDK/client modules elsewhere.
-try:
-    from .ssl_bypass import disable_ssl_verification
-except ImportError:
-    from src.ssl_bypass import disable_ssl_verification
+# ==============================================================================
+# Clés et Modèles Gemini
+# ==============================================================================
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_API_KEY")
+if not GOOGLE_API_KEY:
+    print("⚠️ AVERTISSEMENT : GOOGLE_API_KEY n'est pas définie dans le fichier .env !")
 
-DISABLE_SSL_VERIFY = os.getenv("DISABLE_SSL_VERIFY", "0").strip().lower() in {
-    "1", "true", "yes", "y", "on"
-}
-_SSL_BYPASS_ACTIVE = disable_ssl_verification()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_EMBEDDING_MODEL = os.getenv("GEMINI_EMBEDDING_MODEL", "text-embedding-001")
 
-APP_TITLE = os.getenv("APP_TITLE", "NBA Analyst AI")
-NAME = os.getenv("APP_NAME", "NBA")
-MISTRAL_API_KEY = os.getenv("MISTRAL_API_KEY", "test-key")
-MODEL_NAME = os.getenv("MISTRAL_MODEL", "mistral-small-latest")
-EMBEDDING_MODEL = os.getenv("MISTRAL_EMBEDDING_MODEL", "mistral-embed")
-CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "1500"))
-CHUNK_OVERLAP = int(os.getenv("CHUNK_OVERLAP", "150"))
-EMBEDDING_BATCH_SIZE = int(os.getenv("EMBEDDING_BATCH_SIZE", "32"))
-EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", "1024"))
-SEARCH_K = int(os.getenv("SEARCH_K", "5"))
+# Alias rétrocompatibles
+MODEL_NAME = GEMINI_MODEL
+EMBEDDING_MODEL_NAME = GEMINI_EMBEDDING_MODEL
+EMBEDDING_DIM = 3072
 
+# ==============================================================================
+# Sécurité & SSL
+# ==============================================================================
+DISABLE_SSL_VERIFY = os.getenv("DISABLE_SSL_VERIFY", "0").lower() in ("1", "true", "yes")
+
+# ==============================================================================
+# Chemins du projet
+# ==============================================================================
 DATA_DIR = PROJECT_ROOT / "data"
-RAW_DATA_DIR = DATA_DIR / "raw"
-PROCESSED_DATA_DIR = DATA_DIR / "processed"
-DATABASE_DIR = PROJECT_ROOT / "database"
+DATA_RAW_DIR = DATA_DIR / "raw"
+DATA_PROCESSED_DIR = DATA_DIR / "processed"
+
 VECTOR_DB_DIR = PROJECT_ROOT / "vector_db"
+FAISS_INDEX_FILE = VECTOR_DB_DIR / "faiss_index.bin"
+METADATA_FILE = VECTOR_DB_DIR / "metadata.json"
+
 LOGS_DIR = PROJECT_ROOT / "logs"
-FAISS_INDEX_FILE = VECTOR_DB_DIR / "faiss_index.idx"
-DOCUMENT_CHUNKS_FILE = VECTOR_DB_DIR / "document_chunks.pkl"
-LOG_FILE = LOGS_DIR / "app.log"
-INPUT_DIR = RAW_DATA_DIR
-PROCESSED_DIR = PROCESSED_DATA_DIR
+DATABASE_DIR = PROJECT_ROOT / "database"
 
-for _path in (RAW_DATA_DIR, PROCESSED_DATA_DIR, VECTOR_DB_DIR, LOGS_DIR, DATABASE_DIR):
-    _path.mkdir(parents=True, exist_ok=True)
+for directory in [DATA_PROCESSED_DIR, VECTOR_DB_DIR, LOGS_DIR, DATABASE_DIR]:
+    directory.mkdir(parents=True, exist_ok=True)
 
-
-def get_logger(name=__name__):
-    logger = logging.getLogger(name)
-    if not logger.handlers:
-        logger.setLevel(logging.INFO)
-        formatter = logging.Formatter(
-            "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        )
-        console = logging.StreamHandler()
-        console.setFormatter(formatter)
-        logger.addHandler(console)
-        try:
-            file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
-            file_handler.setFormatter(formatter)
-            logger.addHandler(file_handler)
-        except OSError:
-            pass
-    return logger
+# ==============================================================================
+# Hyperparamètres RAG
+# ==============================================================================
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 50
+SEARCH_K = 3
