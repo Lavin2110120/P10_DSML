@@ -1,0 +1,8 @@
+# Dépendances de la couche agent SQL/RAG (conserver requirements_db.txt pour l'ingestion)
+langchain-core>=0.3,<2
+langgraph>=0.2,<2
+langchain-openai>=0.2,<2
+langchain-mistralai>=0.2,<2
+SQLAlchemy>=2.0,<3.0
+sqlparse>=0.5,<1.0
+pytest>=8,<9
