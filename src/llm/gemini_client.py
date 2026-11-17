@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import logging
+import os
 import math
 from collections.abc import Iterable, Iterator
 from typing import Any
 
 from src import config
 from src.ssl_bypass import disable_ssl_verification
+from src.observability import span
 
-# Appliquer le contournement SSL si activé
-disable_ssl_verification()
+# Le contournement SSL reste désactivé sauf opt-in explicite dans la configuration.
+if os.getenv("DISABLE_SSL_VERIFY", "0") == "1":
+    disable_ssl_verification()
 
 _LOG = logging.getLogger(__name__)
 
@@ -117,6 +120,10 @@ class GeminiClient:
         temperature: float = 0.2,
     ) -> str:
         """Génère du texte via Gemini."""
+        with span("rag.gemini_generate", model=self.model_name, prompt_length=len(prompt or "")):
+            return self._generate_content_uninstrumented(prompt, system_prompt, temperature)
+
+    def _generate_content_uninstrumented(self, prompt: str, system_prompt: str | None, temperature: float) -> str:
         if self._backend == "google-genai":
             config_kwargs: dict[str, Any] = {"temperature": temperature}
             if system_prompt:
@@ -138,37 +145,35 @@ class GeminiClient:
         )
         return response.text or ""
 
+
     def stream_content(
         self,
         prompt: str,
         system_prompt: str | None = None,
         temperature: float = 0.2,
     ) -> Iterator[str]:
-        """Génère du texte en mode streaming."""
-        if self._backend == "google-genai":
-            config_kwargs: dict[str, Any] = {"temperature": temperature}
+        """Génère du texte en streaming, avec une trace dépourvue du prompt."""
+        with span("rag.gemini_generate_stream", model=self.model_name, prompt_length=len(prompt or "")):
+            if self._backend == "google-genai":
+                config_kwargs: dict[str, Any] = {"temperature": temperature}
+                if system_prompt:
+                    config_kwargs["system_instruction"] = system_prompt
+                for chunk in self._client.models.generate_content_stream(
+                    model=self.model_name, contents=prompt, config=config_kwargs
+                ):
+                    if chunk.text:
+                        yield chunk.text
+                return
+
+            kwargs: dict[str, Any] = {}
             if system_prompt:
-                config_kwargs["system_instruction"] = system_prompt
-            for chunk in self._client.models.generate_content_stream(
-                model=self.model_name,
-                contents=prompt,
-                config=config_kwargs,
+                kwargs["system_instruction"] = system_prompt
+            model = self._client.GenerativeModel(self.model_name, **kwargs)
+            for chunk in model.generate_content(
+                prompt, generation_config={"temperature": temperature}, stream=True
             ):
                 if chunk.text:
                     yield chunk.text
-            return
-
-        kwargs: dict[str, Any] = {}
-        if system_prompt:
-            kwargs["system_instruction"] = system_prompt
-        model = self._client.GenerativeModel(self.model_name, **kwargs)
-        for chunk in model.generate_content(
-            prompt,
-            generation_config={"temperature": temperature},
-            stream=True,
-        ):
-            if chunk.text:
-                yield chunk.text
 
     # --------------------------------------------------------------------------
     # Embeddings
@@ -200,6 +205,10 @@ class GeminiClient:
     ) -> list[list[float]]:
         """Calcule par lots les embeddings d'une liste de textes."""
         prepared = [_sanitize_text(t) or " " for t in texts]
+        with span("rag.gemini_embeddings", model=self.embedding_model_name, input_count=len(prepared)):
+            return self._get_embeddings_uninstrumented(prepared, batch_size, task_type, output_dimensionality, **kwargs)
+
+    def _get_embeddings_uninstrumented(self, prepared: list[str], batch_size: int, task_type: str | None, output_dimensionality: int | None, **kwargs: Any) -> list[list[float]]:
         if not prepared:
             return []
 
@@ -226,7 +235,8 @@ class GeminiClient:
                 if cfg is not None:
                     call_kwargs["config"] = cfg
 
-                response = self._client.models.embed_content(**call_kwargs)
+                with span("rag.gemini_embedding_batch", model=self.embedding_model_name, input_count=len(batch)):
+                    response = self._client.models.embed_content(**call_kwargs)
                 embeddings_data = getattr(response, "embeddings", None) or []
                 for entry in embeddings_data:
                     all_vectors.append(_extract_embedding_vector(entry))
@@ -250,7 +260,8 @@ class GeminiClient:
             if output_dimensionality:
                 legacy_kwargs["output_dimensionality"] = output_dimensionality
 
-            result = self._client.embed_content(**legacy_kwargs)
+            with span("rag.gemini_embedding_batch", model=self.embedding_model_name, input_count=len(batch)):
+                result = self._client.embed_content(**legacy_kwargs)
             raw = result.get("embedding", [])
             if raw and isinstance(raw[0], (int, float)):
                 all_vectors.append([float(x) for x in raw])

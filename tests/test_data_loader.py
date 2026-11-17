@@ -1,7 +1,6 @@
 """Tests consolidés et isolés pour ``src.ingestion.data_loader``."""
 from __future__ import annotations
 
-import hashlib
 import json
 import runpy
 import sys
@@ -16,12 +15,20 @@ from src.ingestion import data_loader as loader
 
 
 def test_imports_full_src_ingestion_data_loader():
-    """Refuse la version tronquée de 4050 octets précédemment testée."""
-    source = Path(loader.__file__).resolve()
-    assert source.stat().st_size == 8672
-    assert hashlib.sha256(source.read_bytes()).hexdigest() == (
-        "52216a5e12610da075c0f9a1d58d93c337bde07b9ae842be7485e0a001a942f2"
-    )
+    """Vérifie l'import et la disponibilité du pipeline de normalisation/chunking."""
+    assert Path(loader.__file__).is_file()
+    assert callable(loader.normalize_text)
+    assert callable(loader.chunk_text)
+    assert callable(loader.chunk_document)
+    assert callable(loader.chunk_documents)
+    assert loader.normalize_text("A\tB") == "A B"
+    assert loader.chunk_text("texte court") == ["texte court"]
+
+
+def test_chunk_documents_warns_when_no_text_field_is_recognized(caplog):
+    with caplog.at_level("WARNING", logger=loader.__name__):
+        assert loader.chunk_documents([{"source": "unknown"}]) == []
+    assert "aucun champ texte reconnu" in caplog.text
 
 
 def test_extract_text_from_txt_reads_utf8(tmp_path):

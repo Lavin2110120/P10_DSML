@@ -7,9 +7,19 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
+import unicodedata
 import zipfile
 from pathlib import Path
 from typing import Any
+
+try:
+    from ..models import Document, Chunk
+    from ..observability import span
+except ImportError:
+    from src.models import Document, Chunk
+    from src.observability import span
 
 # This module lives in src/ingestion; apply the project's explicit TLS setting
 # before optional parsers or other consumers initialize network clients.
@@ -20,7 +30,8 @@ except ImportError:  # Support imports when the repository package is src.*
     from src import config
     from src.ssl_bypass import disable_ssl_verification
 
-disable_ssl_verification()
+if os.getenv("DISABLE_SSL_VERIFY", "0") == "1":
+    disable_ssl_verification()
 
 _LOG = logging.getLogger(__name__)
 
@@ -43,6 +54,146 @@ PROCESSED_DATA_DIR = Path(
 # Public aliases used by a few older callers.
 INPUT_DIR = RAW_DATA_DIR
 PROCESSED_DIR = PROCESSED_DATA_DIR
+
+
+def _chunk_settings(
+    chunk_size: int | None = None, overlap: int | None = None
+) -> tuple[int, int]:
+    """Return validated chunk settings, defaulting to config.py values."""
+    size = getattr(config, "CHUNK_SIZE") if chunk_size is None else chunk_size
+    overlap_size = getattr(config, "CHUNK_OVERLAP") if overlap is None else overlap
+    if not isinstance(size, int) or size <= 0:
+        raise ValueError("CHUNK_SIZE doit être un entier positif")
+    if not isinstance(overlap_size, int) or overlap_size < 0:
+        raise ValueError("CHUNK_OVERLAP doit être un entier positif ou nul")
+    if overlap_size >= size:
+        raise ValueError("CHUNK_OVERLAP doit être inférieur à CHUNK_SIZE")
+    return size, overlap_size
+
+
+def normalize_text(text: str) -> str:
+    """Nettoyer les caractères parasites et normaliser les espaces du texte."""
+    if not isinstance(text, str):
+        text = str(text or "")
+    text = text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", " ")
+    # Supprimer les caractères de contrôle, de format (dont zero-width/BOM),
+    # non imprimables et autres caractères Unicode non textuels.
+    text = "".join(
+        char for char in text
+        if char == "\n" or (char.isprintable() and unicodedata.category(char) not in {"Cc", "Cf", "Cs", "Cn"})
+    )
+    lines = [re.sub(r"[^\S\n]+", " ", line).strip() for line in text.split("\n")]
+    normalized_lines: list[str] = []
+    blank_seen = False
+    for line in lines:
+        if line:
+            normalized_lines.append(line)
+            blank_seen = False
+        elif normalized_lines and not blank_seen:
+            normalized_lines.append("")
+            blank_seen = True
+    return "\n".join(normalized_lines).strip()
+
+
+def _preferred_chunk_end(text: str, start: int, hard_end: int) -> int:
+    """Prefer sentence/word boundaries close to the maximum permitted end."""
+    if hard_end >= len(text):
+        return len(text)
+    floor = start + max(1, int((hard_end - start) * 0.8))
+    sentence_ends = [
+        match.end() for match in re.finditer(r"[.!?](?=\s|$)", text[start:hard_end])
+        if start + match.end() >= floor
+    ]
+    if sentence_ends:
+        return start + sentence_ends[-1]
+    spaces = [match.start() + start for match in re.finditer(r"\s+", text[start:hard_end])
+              if start + match.start() >= floor]
+    if spaces:
+        return spaces[-1]
+    return hard_end
+
+
+def chunk_text(
+    text: str, chunk_size: int | None = None, overlap: int | None = None
+) -> list[str]:
+    """Découper du texte normalisé en segments bornés, avec chevauchement."""
+    size, overlap_size = _chunk_settings(chunk_size, overlap)
+    cleaned = normalize_text(text)
+    if not cleaned:
+        return []
+    chunks: list[str] = []
+    start = 0
+    while start < len(cleaned):
+        hard_end = min(start + size, len(cleaned))
+        end = _preferred_chunk_end(cleaned, start, hard_end)
+        # Keep boundary whitespace inside the slice: it preserves exact source
+        # coverage and makes the configured character overlap deterministic.
+        chunk = cleaned[start:end]
+        if chunk.strip():
+            chunks.append(chunk)
+        if end >= len(cleaned):
+            break
+        start = max(start + 1, end - overlap_size)
+    return chunks
+
+
+def chunk_document(
+    document: dict[str, Any], chunk_size: int | None = None, overlap: int | None = None
+) -> list[dict[str, Any]]:
+    """Chunk one source record while retaining its fields and source metadata.
+
+    ``text`` is the canonical loader schema; accept common legacy document
+    fields as fallbacks so indexing does not silently discard valid content.
+    """
+    source_text = document.get("text")
+    if source_text is None:
+        source_text = document.get("page_content")
+    if source_text is None:
+        source_text = document.get("content")
+    if source_text is None:
+        _LOG.warning("Document ignoré : aucun champ texte reconnu (text/page_content/content)")
+        return []
+    chunks = chunk_text(source_text, chunk_size, overlap)
+    output: list[dict[str, Any]] = []
+    for index, text in enumerate(chunks):
+        item = dict(document)
+        item["text"] = normalize_text(text)
+        metadata = dict(document.get("metadata") or {})
+        for key in ("source", "page"):
+            if key in document and key not in metadata:
+                metadata[key] = document[key]
+        metadata["chunk_index"] = index
+        item["metadata"] = metadata
+        item["chunk_index"] = index
+        try:
+            validated = Chunk.model_validate(item)
+            output.append(validated.model_dump(mode="python"))
+        except Exception as exc:
+            _LOG.warning("Chunk %d ignoré : validation impossible (%s)", index, exc)
+    return output
+
+
+def chunk_documents(
+    documents: list[dict[str, Any]], chunk_size: int | None = None, overlap: int | None = None
+) -> list[dict[str, Any]]:
+    """Normalize and chunk all document records for embedding/indexing."""
+    size, overlap_size = _chunk_settings(chunk_size, overlap)
+    output: list[dict[str, Any]] = []
+    normalized_count = 0
+    for index, document in enumerate(documents):
+        if not isinstance(document, dict) or not any(document.get(key) is not None for key in ("text", "page_content", "content")):
+            _LOG.warning("Document ignoré : aucun champ texte reconnu (text/page_content/content)")
+            continue
+        try:
+            validated = Document.model_validate(document)
+            validated.text = normalize_text(validated.text)
+            validated = Document.model_validate(validated.model_dump(mode="python", exclude_none=True))
+            normalized_count += 1
+            output.extend(chunk_document(validated.model_dump(mode="python", exclude_none=True), size, overlap_size))
+        except Exception as exc:
+            _LOG.warning("Document %d ignoré avant découpage : validation impossible (%s)", index, exc)
+    _LOG.info("Normalisation et découpage : %d documents -> %d chunks", normalized_count, len(output))
+    return output
 
 
 def extract_text_from_txt(file_path: str | Path) -> str:
@@ -154,7 +305,7 @@ def download_and_extract_zip(
     return destination_path
 
 
-def load_and_parse_files(input_dir: str | Path | None = None) -> list[dict[str, Any]]:
+def _load_and_parse_files(input_dir: str | Path | None = None) -> list[dict[str, Any]]:
     """Recursively load supported files from ``input_dir`` or configured raw data."""
     root = Path(input_dir) if input_dir is not None else RAW_DATA_DIR
     if not root.exists():
@@ -195,10 +346,21 @@ def load_and_parse_files(input_dir: str | Path | None = None) -> list[dict[str, 
                 if category is not None:
                     document["category"] = category
                     metadata["category"] = category
+                try:
+                    Document.model_validate(document)
+                except Exception as validation_error:
+                    _LOG.warning("Document ignoré après validation (%s) : %s", path.name, validation_error)
+                    continue
                 documents.append(document)
         except Exception as exc:
             raise RuntimeError(f"Error reading {path.name}: {exc}") from exc
     return documents
+
+
+def load_and_parse_files(input_dir: str | Path | None = None) -> list[dict[str, Any]]:
+    """Charge les fichiers sous une trace Logfire facultative."""
+    with span("rag.load_documents"):
+        return _load_and_parse_files(input_dir)
 
 
 def save_processed_documents(
@@ -222,7 +384,14 @@ def load_processed_documents(path: str | Path | None = None) -> list[dict[str, A
         documents = json.load(source_file)
     if not isinstance(documents, list):
         raise ValueError(f"Processed document file must contain a JSON list: {source_path}")
-    return documents
+    valid = []
+    for index, item in enumerate(documents):
+        try:
+            Document.model_validate(item)
+            valid.append(item)
+        except Exception as exc:
+            _LOG.warning("Document %d ignoré dans %s : validation impossible (%s)", index, source_path.name, exc)
+    return valid
 
 
 if __name__ == "__main__":

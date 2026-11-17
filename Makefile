@@ -2,9 +2,6 @@
 # Recipes use GNU make and Python commands (no PowerShell-specific syntax).
 # On Windows, run with GNU Make and ensure python, pip-compile, and pytest are on PATH.
 
-DISABLE_SSL_VERIFY ?= 0
-export DISABLE_SSL_VERIFY
-
 .PHONY: help install setup data vectorstore test evaluate app lint format lock clean all
 
 help:
@@ -23,9 +20,9 @@ help:
 	@echo "  make all         - Pipeline complet : install → data → vectorstore → test"
 
 install:
+	python -m pip install --upgrade pip
 	python -m pip install -e ".[dev]"
 
-# Retained for compatibility with existing workflows; editable install includes setup.
 setup: install
 
 data:
@@ -33,7 +30,7 @@ data:
 	python -m src.ingestion.indexer
 
 vectorstore:
-	python -m src.rag.vector_store
+	python -m src.ingestion.indexer
 
 test:
 	python -m pytest tests/ --cov=src --cov-report=term-missing
@@ -42,7 +39,7 @@ evaluate:
 	python -m src.evaluation.evaluate_ragas
 
 app:
-	python -m streamlit run app/MistralChat.py
+	python -m streamlit run app/GeminiChat.py
 
 lint:
 	python -m ruff check src app tests
