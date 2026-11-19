@@ -43,6 +43,7 @@ logs/
 
 # Fichiers de données
 data/
+models/ 
 
 # Jupyter Notebook
 .ipynb_checkpoints
